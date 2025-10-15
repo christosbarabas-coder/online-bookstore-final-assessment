@@ -5,39 +5,38 @@ import uuid
 app = Flask(__name__)
 app.secret_key = 'your_secret_key'  # Required for session management
 
-# Global storage for users and orders (in production, use a database)
-users = {}  # email -> User object
-orders = {}  # order_id -> Order object
+# -------------------------
+# In-memory storage (demo)
+# -------------------------
+users = {}   # email -> User
+orders = {}  # order_id -> Order
 
-# Create demo user for testing
+# Demo user
 demo_user = User("demo@bookstore.com", "demo123", "Demo User", "123 Demo Street, Demo City, DC 12345")
 users["demo@bookstore.com"] = demo_user
 
-# Create a cart instance to manage the cart
+# Cart instance
 cart = Cart()
 
-# Create a global books list to avoid duplication
+# Books
 BOOKS = [
-    Book("The Great Gatsby", "Fiction", 10.99, "/images/books/the_great_gatsby.jpg"),
-    Book("1984", "Dystopia", 8.99, "/images/books/1984.jpg"),
-    Book("I Ching", "Traditional", 18.99, "/images/books/I-Ching.jpg"),
-    Book("Moby Dick", "Adventure", 12.49, "/images/books/moby_dick.jpg")
+    Book("The Great Gatsby", "Fiction", 10.99, "images/books/the_great_gatsby.jpg"),
+    Book("1984", "Dystopia", 8.99, "images/books/1984.jpg"),
+    Book("I Ching", "Traditional", 18.99, "images/books/I-Ching.jpg"),
+    Book("Moby Dick", "Adventure", 12.49, "images/books/moby_dick.jpg"),
 ]
-
+# -------------------------
+# Helpers
+# -------------------------
 def get_book_by_title(title):
-    """Helper function to find a book by title"""
     return next((book for book in BOOKS if book.title == title), None)
 
-
 def get_current_user():
-    """Helper function to get current logged-in user"""
     if 'user_email' in session:
         return users.get(session['user_email'])
     return None
 
-
 def login_required(f):
-    """Decorator to require login for certain routes"""
     from functools import wraps
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -47,24 +46,39 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+# ---- Coupons registry ----
+COUPONS = {
+    "SALE10": 0.10,
+    "SALE20": 0.20,
+}
 
+def compute_cart_totals_from_cart(c):
+    """Υπολογισμός subtotal/discount/total από το αντικείμενο Cart."""
+    items = c.get_items() if hasattr(c, "get_items") else []
+    # Προσπάθησε να χρησιμοποιήσεις item.get_total_price(), αλλιώς υπολόγισε μόνος σου
+    try:
+        subtotal = sum(float(it.get_total_price()) for it in items)
+    except Exception:
+        subtotal = sum(float(it.book.price) * int(it.quantity) for it in items)
+    rate = float(session.get("coupon_value") or 0.0)
+    discount = round(subtotal * rate, 2)
+    total = round(subtotal - discount, 2)
+    return subtotal, discount, total
+
+# -------------------------
+# Routes
+# -------------------------
 @app.route('/')
 def index():
     current_user = get_current_user()
     return render_template('index.html', books=BOOKS, cart=cart, current_user=current_user)
 
-
 @app.route('/add-to-cart', methods=['POST'])
 def add_to_cart():
     book_title = request.form.get('title')
     quantity = int(request.form.get('quantity', 1))
-    
-    book = None
-    for b in BOOKS:
-        if b.title == book_title:
-            book = b
-            break
-    
+
+    book = get_book_by_title(book_title)
     if book:
         cart.add_book(book, quantity)
         flash(f'Added {quantity} "{book.title}" to cart!', 'success')
@@ -73,7 +87,6 @@ def add_to_cart():
 
     return redirect(url_for('index'))
 
-
 @app.route('/remove-from-cart', methods=['POST'])
 def remove_from_cart():
     book_title = request.form.get('title')
@@ -81,45 +94,23 @@ def remove_from_cart():
     flash(f'Removed "{book_title}" from cart!', 'success')
     return redirect(url_for('view_cart'))
 
-
 @app.route('/update-cart', methods=['POST'])
 def update_cart():
-    """
-    Update the quantity of a book in the cart.
-    This function handles HTTP POST requests to update the quantity of a book in the user's cart.
-    If the quantity is set to 0 or less, the book is effectively removed from the cart.
-    Args:
-        None (uses form data from the request)
-    Returns:
-        Response: Redirects to the view_cart page after updating the cart.
-    Form Parameters:
-        title (str): The title of the book to update.
-        quantity (int): The new quantity of the book. Defaults to 1.
-    Flash Messages:
-        - Confirmation of removal if quantity <= 0
-        - Confirmation of update otherwise
-    """
     book_title = request.form.get('title')
     quantity = int(request.form.get('quantity', 1))
-    
     cart.update_quantity(book_title, quantity)
-    
+
     if quantity <= 0:
         flash(f'Removed "{book_title}" from cart!', 'success')
     else:
         flash(f'Updated "{book_title}" quantity to {quantity}!', 'success')
-    
-    return redirect(url_for('view_cart'))
 
+    return redirect(url_for('view_cart'))
 
 @app.route('/cart')
 def view_cart():
     current_user = get_current_user()
-
-    # πάρε τα items του καλαθιού και υπολόγισε σύνολα/έκπτωση
-    items = cart.get_items()  # η Cart έχει ήδη αυτή τη μέθοδο (τη χρησιμοποιείς και στο checkout)
-    subtotal, discount, total = compute_cart_totals(items)
-
+    subtotal, discount, total = compute_cart_totals_from_cart(cart)
     return render_template(
         'cart.html',
         cart=cart,
@@ -128,7 +119,25 @@ def view_cart():
         total=total,
         coupon_code=session.get("coupon_code"),
         current_user=current_user
-    ) 
+    )
+
+@app.post("/apply-coupon")
+def apply_coupon():
+    code = (request.form.get("code") or "").strip().upper()
+    if not code:
+        flash("Please enter a coupon code.", "warning")
+        return redirect(url_for("view_cart"))
+
+    if code in COUPONS:
+        session["coupon_code"] = code
+        session["coupon_value"] = COUPONS[code]
+        flash(f"Coupon {code} applied!", "success")
+    else:
+        session.pop("coupon_code", None)
+        session.pop("coupon_value", None)
+        flash("Invalid coupon code.", "error")
+
+    return redirect(url_for("view_cart"))
 
 @app.route('/clear-cart', methods=['POST'])
 def clear_cart():
@@ -136,26 +145,23 @@ def clear_cart():
     flash('Cart cleared!', 'success')
     return redirect(url_for('view_cart'))
 
-
 @app.route('/checkout')
 def checkout():
     if cart.is_empty():
         flash('Your cart is empty!', 'error')
         return redirect(url_for('index'))
-    
+
     current_user = get_current_user()
     total_price = cart.get_total_price()
     return render_template('checkout.html', cart=cart, total_price=total_price, current_user=current_user)
 
-
 @app.route('/process-checkout', methods=['POST'])
 def process_checkout():
-    """Process the checkout form with shipping and payment information"""
     if cart.is_empty():
         flash('Your cart is empty!', 'error')
         return redirect(url_for('index'))
-    
-    # Get form data
+
+    # Shipping
     shipping_info = {
         'name': request.form.get('name'),
         'email': request.form.get('email'),
@@ -163,20 +169,21 @@ def process_checkout():
         'city': request.form.get('city'),
         'zip_code': request.form.get('zip_code')
     }
-    
+
+    # Payment
     payment_info = {
         'payment_method': request.form.get('payment_method'),
         'card_number': request.form.get('card_number'),
         'expiry_date': request.form.get('expiry_date'),
         'cvv': request.form.get('cvv')
     }
-    
+
     discount_code = request.form.get('discount_code', '')
-    
-    # Calculate total with discount
+
+    # Base total
     total_amount = cart.get_total_price()
-    discount_applied = 0
-    
+    discount_applied = 0.0
+
     if discount_code == 'SAVE10':
         discount_applied = total_amount * 0.10
         total_amount -= discount_applied
@@ -187,25 +194,26 @@ def process_checkout():
         flash(f'Welcome discount applied! You saved ${discount_applied:.2f}', 'success')
     elif discount_code:
         flash('Invalid discount code', 'error')
-    
+
+    # Validate shipping
     required_fields = ['name', 'email', 'address', 'city', 'zip_code']
     for field in required_fields:
         if not shipping_info.get(field):
             flash(f'Please fill in the {field.replace("_", " ")} field', 'error')
             return redirect(url_for('checkout'))
-    
+
+    # Validate payment
     if payment_info['payment_method'] == 'credit_card':
         if not payment_info.get('card_number') or not payment_info.get('expiry_date') or not payment_info.get('cvv'):
             flash('Please fill in all credit card details', 'error')
             return redirect(url_for('checkout'))
-    
-    # Process payment through mock gateway
+
+    # Mock payment
     payment_result = PaymentGateway.process_payment(payment_info)
-    
     if not payment_result['success']:
         flash(payment_result['message'], 'error')
         return redirect(url_for('checkout'))
-    
+
     # Create order
     order_id = str(uuid.uuid4())[:8].upper()
     order = Order(
@@ -219,79 +227,66 @@ def process_checkout():
         },
         total_amount=total_amount
     )
-    
-    # Store order
     orders[order_id] = order
-    
-    # Add order to user if logged in
+
+    # Attach to user
     current_user = get_current_user()
     if current_user:
         current_user.add_order(order)
-    
-    # Send confirmation email (mock)
+
+    # Email (mock)
     EmailService.send_order_confirmation(shipping_info['email'], order)
-    
-    # Clear cart
+
+    # Clear cart and store last order id
     cart.clear()
-    
-    # Store order in session for confirmation page
     session['last_order_id'] = order_id
-    
+
     flash('Payment successful! Your order has been confirmed.', 'success')
     return redirect(url_for('order_confirmation', order_id=order_id))
 
-
 @app.route('/order-confirmation/<order_id>')
 def order_confirmation(order_id):
-    """Display order confirmation page"""
     order = orders.get(order_id)
     if not order:
         flash('Order not found', 'error')
         return redirect(url_for('index'))
-    
+
     current_user = get_current_user()
     return render_template('order_confirmation.html', order=order, current_user=current_user)
 
-
-# User Account Management Routes
-
+# -------------------------
+# Account
+# -------------------------
 @app.route('/register', methods=['GET', 'POST'])
 def register():
-    """User registration"""
     if request.method == 'POST':
         email = request.form.get('email')
         password = request.form.get('password')
         name = request.form.get('name')
         address = request.form.get('address', '')
-        
-        # Validate required fields
+
         if not email or not password or not name:
             flash('Please fill in all required fields', 'error')
             return render_template('register.html')
-        
+
         if email in users:
             flash('An account with this email already exists', 'error')
             return render_template('register.html')
-        
-        # Create new user
+
         user = User(email, password, name, address)
         users[email] = user
-        
-        # Log in the user
         session['user_email'] = email
         flash('Account created successfully! You are now logged in.', 'success')
         return redirect(url_for('index'))
-    
-    return render_template('register.html')
 
+    return render_template('register.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    """User login"""
     if request.method == 'POST':
         email = request.form.get('email')
         password = request.form.get('password')
-        
+
         user = users.get(email)
         if user and user.password == password:
             session['user_email'] = email
@@ -299,83 +294,39 @@ def login():
             return redirect(url_for('index'))
         else:
             flash('Invalid email or password', 'error')
-    
-    return render_template('login.html')
 
+    return render_template('login.html')
 
 @app.route('/logout')
 def logout():
-    """User logout"""
     session.pop('user_email', None)
     flash('Logged out successfully!', 'success')
     return redirect(url_for('index'))
 
-
 @app.route('/account')
 @login_required
 def account():
-    """User account page"""
     current_user = get_current_user()
     return render_template('account.html', current_user=current_user)
-
 
 @app.route('/update-profile', methods=['POST'])
 @login_required
 def update_profile():
-    """Update user profile"""
     current_user = get_current_user()
-    
     current_user.name = request.form.get('name', current_user.name)
     current_user.address = request.form.get('address', current_user.address)
-    
+
     new_password = request.form.get('new_password')
     if new_password:
         current_user.password = new_password
         flash('Password updated successfully!', 'success')
     else:
         flash('Profile updated successfully!', 'success')
-    
+
     return redirect(url_for('account'))
 
-
+# -------------------------
+# Main
+# -------------------------
 if __name__ == '__main__':
     app.run(debug=True)
-# --- Coupons ---
-COUPONS = {
-    "SALE10": 0.10,
-    "SALE20": 0.20,
-}
-
-@app.post("/apply-coupon")
-def apply_coupon():
-    from flask import request, redirect, url_for, flash, session  # safe αν δεν υπάρχει ήδη
-    code = (request.form.get("code") or "").strip().upper()
-    if not code:
-        flash("Δώσε κωδικό κουπονιού.", "warning")
-        return redirect(url_for("view_cart"))
-
-    if code in COUPONS:
-        session["coupon_code"] = code
-        session["coupon_value"] = COUPONS[code]
-        flash(f"Το κουπόνι {code} εφαρμόστηκε!", "success")
-    else:
-        session.pop("coupon_code", None)
-        session.pop("coupon_value", None)
-        flash("Άκυρος κωδικός κουπονιού.", "danger")
-
-    return redirect(url_for("view_cart"))
-# εδώ ο ΠΡΑΓΜΑΤΙΚΟΣ κώδικας Python…
-
-# ---- totals helper (cart) ----
-from flask import session
-
-from flask import session  # αν δεν έχεις ήδη το session στα imports, άφησέ το
-
-def compute_cart_totals(items):
-    """items: iterable από dicts π.χ. {'price': 10.0, 'quantity': 2}"""
-    items = items or []
-    subtotal = sum(float(i.get("price", 0)) * int(i.get("quantity", 1)) for i in items)
-    rate = float(session.get("coupon_value") or 0.0)  # από το κουπόνι
-    discount = round(subtotal * rate, 2)
-    total = round(subtotal - discount, 2)
-    return subtotal, discount, total
