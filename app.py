@@ -115,8 +115,20 @@ def update_cart():
 @app.route('/cart')
 def view_cart():
     current_user = get_current_user()
-    return render_template('cart.html', cart=cart, current_user=current_user)
 
+    # πάρε τα items του καλαθιού και υπολόγισε σύνολα/έκπτωση
+    items = cart.get_items()  # η Cart έχει ήδη αυτή τη μέθοδο (τη χρησιμοποιείς και στο checkout)
+    subtotal, discount, total = compute_cart_totals(items)
+
+    return render_template(
+        'cart.html',
+        cart=cart,
+        subtotal=subtotal,
+        discount=discount,
+        total=total,
+        coupon_code=session.get("coupon_code"),
+        current_user=current_user
+    ) 
 
 @app.route('/clear-cart', methods=['POST'])
 def clear_cart():
@@ -352,3 +364,18 @@ def apply_coupon():
         flash("Άκυρος κωδικός κουπονιού.", "danger")
 
     return redirect(url_for("view_cart"))
+# εδώ ο ΠΡΑΓΜΑΤΙΚΟΣ κώδικας Python…
+
+# ---- totals helper (cart) ----
+from flask import session
+
+from flask import session  # αν δεν έχεις ήδη το session στα imports, άφησέ το
+
+def compute_cart_totals(items):
+    """items: iterable από dicts π.χ. {'price': 10.0, 'quantity': 2}"""
+    items = items or []
+    subtotal = sum(float(i.get("price", 0)) * int(i.get("quantity", 1)) for i in items)
+    rate = float(session.get("coupon_value") or 0.0)  # από το κουπόνι
+    discount = round(subtotal * rate, 2)
+    total = round(subtotal - discount, 2)
+    return subtotal, discount, total
