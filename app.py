@@ -328,3 +328,27 @@ def update_profile():
 
 if __name__ == '__main__':
     app.run(debug=True)
+# --- Coupons ---
+COUPONS = {
+    "SALE10": 0.10,
+    "SALE20": 0.20,
+}
+
+@app.post("/apply-coupon")
+def apply_coupon():
+    from flask import request, redirect, url_for, flash, session  # safe αν δεν υπάρχει ήδη
+    code = (request.form.get("code") or "").strip().upper()
+    if not code:
+        flash("Δώσε κωδικό κουπονιού.", "warning")
+        return redirect(url_for("view_cart"))
+
+    if code in COUPONS:
+        session["coupon_code"] = code
+        session["coupon_value"] = COUPONS[code]
+        flash(f"Το κουπόνι {code} εφαρμόστηκε!", "success")
+    else:
+        session.pop("coupon_code", None)
+        session.pop("coupon_value", None)
+        flash("Άκυρος κωδικός κουπονιού.", "danger")
+
+    return redirect(url_for("view_cart"))
